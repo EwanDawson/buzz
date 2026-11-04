@@ -1758,9 +1758,6 @@ pub async fn emit_group_discovery_events(
             break;
         }
     }
-    if !published {
-        anyhow::bail!("group discovery publication repeatedly changed for {channel_id}");
-    }
     let relay_pubkey_hex = hex::encode(state.relay_keypair.public_key().to_bytes());
 
     // Re-capture membership behind the writer lock immediately before the
@@ -1774,6 +1771,12 @@ pub async fn emit_group_discovery_events(
     let stored_members = store_group_members_event(state, &mut member_snapshot).await?;
     member_snapshot.release().await?;
     dispatch_group_members_event(tenant, state, stored_members, &relay_pubkey_hex).await;
+
+    // Metadata/admin contention must not skip the independent member snapshot.
+    // Winning producers can disappear before they publish their own 39002.
+    if !published {
+        anyhow::bail!("group discovery publication repeatedly changed for {channel_id}");
+    }
 
     Ok(())
 }
