@@ -8,6 +8,9 @@ SELECT $ddl$CREATE INDEX idx_events_media_edit_target ON ONLY public.events
  WHERE kind=40003 AND deleted_at IS NULL$ddl$
 WHERE to_regclass('public.idx_events_media_edit_target') IS NULL
 \gexec
+-- Concurrent operations wait for older transactions/snapshots. Keep the overall
+-- statement budget, but do not cancel those waits after one second.
+SET lock_timeout = 0;
 -- A failed generated child keeps its name. Remove only unusable, unattached,
 -- definition-matching builds so retries reuse desired-state child names.
 SELECT format('DROP INDEX CONCURRENTLY %s', i.indexrelid::regclass)
@@ -32,6 +35,8 @@ WHERE h.inhparent='public.events'::regclass
        substring(pg_get_indexdef('public.idx_events_media_edit_target'::regclass) FROM ' USING .*'))
 ORDER BY c.oid
 \gexec
+-- Parent metadata operations must still acquire their locks promptly.
+SET lock_timeout = '1s';
 SELECT format('ALTER INDEX public.idx_events_media_edit_target ATTACH PARTITION %s', child.indexrelid::regclass)
 FROM pg_inherits h JOIN pg_class c ON c.oid=h.inhrelid
 CROSS JOIN LATERAL (SELECT i.indexrelid FROM pg_index i WHERE i.indrelid=c.oid

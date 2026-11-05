@@ -313,6 +313,10 @@ async fn reject_legacy_nip_rs_cardinality_ambiguity(conn: &mut PgConnection) -> 
 mod retirement_postgres_tests;
 
 #[cfg(test)]
+#[path = "media_index_prebuild_postgres_tests.rs"]
+mod media_index_prebuild_postgres_tests;
+
+#[cfg(test)]
 mod postgres_tests {
     use super::*;
     use crate::test_support::ScratchDb;

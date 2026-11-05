@@ -31,6 +31,9 @@ at a time; ensure an earlier build has ended before retrying. A retry drops
 only invalid, unattached child indexes whose definitions match the parent,
 using `DROP INDEX CONCURRENTLY` outside a transaction. It then rebuilds them
 concurrently with the same generated names expected by desired-state tooling.
+Concurrent child creation and cleanup disable `lock_timeout` so older
+transactions can finish; each statement retains its 30-minute timeout. Parent
+creation and partition attachment retain the one-second lock timeout.
 Valid or attached indexes are retained. Wrong definitions fail attachment or
 migration verification and need operator correction before proceeding. Large
 deployments must retain the concurrent build procedure.
