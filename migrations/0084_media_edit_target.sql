@@ -1,12 +1,10 @@
--- Prebuild on populated databases; see docs/private-media-index-deployment.md.
+-- Build within bounded startup budgets; large deployments prebuild concurrently.
+-- See docs/private-media-index-deployment.md.
 SET LOCAL lock_timeout = '1s';
 SET LOCAL statement_timeout = '5s';
 DO $migration$
 BEGIN
     IF to_regclass('public.idx_events_media_edit_target') IS NULL THEN
-        IF EXISTS (SELECT 1 FROM public.events LIMIT 1) THEN
-            RAISE EXCEPTION 'prebuild idx_events_media_edit_target concurrently before shadow; see docs/private-media-index-deployment.md';
-        END IF;
         CREATE INDEX idx_events_media_edit_target ON public.events
             (community_id, channel_id, (decode(lower(jsonb_path_query_first(tags, 'strict $[*] ? (@[0] == "e" && @[1] like_regex "^[0-9A-Fa-f]{64}$")[1]', '{}'::jsonb, true) #>> '{}'), 'hex')), created_at DESC, id DESC)
             WHERE kind = 40003 AND deleted_at IS NULL;

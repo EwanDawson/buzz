@@ -1,12 +1,13 @@
 # Media edit target index deployment
 
-Before deploying migration 0084, applying desired-state schema to an existing
-database, or enabling shadow, prebuild the partial btree
-on the normalized first valid edit target. Signed event tags are never rewritten.
+Before enabling shadow, build and verify the partial btree on the normalized
+first valid edit target. Small databases may use migration 0085 with auto-migration;
+large deployments with auto-migration off prebuild concurrently before applying
+0085 or desired-state schema. Signed event tags are never rewritten.
 The immutable built-in JSONPath expression preserves tag order and hex casing.
 No SQL function is added.
 
-Use the same prebuild-then-verify approach as [thread windows](thread-window-deployment.md).
+For a concurrent prebuild, use the same approach as [thread windows](thread-window-deployment.md).
 Run from this checkout, outside a transaction:
 
 ```sh
@@ -16,7 +17,8 @@ psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f scripts/maintenance/prebuild-media
 The script creates an `ON ONLY` parent, builds each immediate events partition
 index `CONCURRENTLY` with PostgreSQL-generated names (matching pgschema), then
 attaches it. pgschema cannot build a partitioned parent concurrently, so this
-prebuild is required for existing databases under either schema deployment path. The final bounded migration guard checks
+prebuild is required for large existing databases under either schema deployment
+path. The final bounded migration guard checks
 readiness, validity, access method, key order, predicate and exact expression.
 A valid parent proves every existing partition has an attached matching index.
 New monthly partitions inherit the index through ordinary `PARTITION OF` creation;
@@ -30,12 +32,16 @@ only invalid, unattached child indexes whose definitions match the parent,
 using `DROP INDEX CONCURRENTLY` outside a transaction. It then rebuilds them
 concurrently with the same generated names expected by desired-state tooling.
 Valid or attached indexes are retained. Wrong definitions fail attachment or
-migration verification and need operator correction before proceeding. Never
-replace concurrent builds with a blocking build.
+migration verification and need operator correction before proceeding. Large
+deployments must retain the concurrent build procedure.
 
-Migration 0084 builds directly only on an empty events table. Populated databases
-without the prebuilt index fail startup with an explicit prebuild instruction.
-With auto-migration disabled, operators must apply and verify 0084 before deploying
+Migration 0085 builds a missing index inline on empty or populated databases,
+with a one-second lock timeout and five-second statement timeout. Contention or
+a build exceeding those budgets aborts the migration without recording 0085;
+retry after the contention clears, or disable auto-migration and prebuild
+concurrently for a large deployment. A prebuilt index skips CREATE entirely,
+then passes the same exact catalog validation without an index-build lock.
+With auto-migration disabled, operators must apply and verify 0085 before deploying
 this binary, even in off mode. Bypassing that ordering and enabling enforce can
 cause lookup timeouts and authorization-unavailable responses; restore off and
 complete prebuild/verification before shadow. Do not use that bypass as a soak.
@@ -45,4 +51,4 @@ the new index, which adds only normal index maintenance. No row backfill, trigge
 function or foreign key is added. New and old binaries may serve against the
 expanded schema. Keep auto-migration disabled on old binaries/restarts/rollback
 because sqlx rejects unknown migration versions. Do not run community deletion
-between 0083's table expansion and the new binary's deletion-catalog deployment.
+between 0084's table expansion and the new binary's deletion-catalog deployment.

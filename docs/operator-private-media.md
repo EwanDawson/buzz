@@ -66,11 +66,14 @@ media access through the ordinary media endpoint.
 
 ## Rollout and recovery
 
-1. Before any pod enters shadow, [prebuild and verify the edit-target index](private-media-index-deployment.md)
-   concurrently per partition, then apply migrations 0083–0084 (or desired-state schema).
-   Populated databases without the index fail migration/startup; with auto-migration
-   disabled, bypassing the required schema step can cause lookup timeouts/503 in
-   enforce. Restore off, complete prebuild/verification, then begin shadow.
+1. Before any pod enters shadow, [build and verify the edit-target index](private-media-index-deployment.md).
+   Small databases may auto-migrate through 0084–0085: a missing index builds
+   within a one-second lock and five-second statement budget, even with data.
+   Large deployments disable auto-migration and prebuild concurrently per
+   partition before applying 0085 or desired-state schema. A budget failure
+   leaves migration retryable; a valid prebuild skips the blocking build.
+   Bypassing the schema step can cause lookup timeouts/503 in enforce. Restore
+   off, finish index construction/verification, then begin shadow.
    The migrations add plain tenant tables and an index, with no SQL functions,
    triggers, foreign keys or data rewrite.
 2. Deploy the new binary on every writer with mode `off`.
