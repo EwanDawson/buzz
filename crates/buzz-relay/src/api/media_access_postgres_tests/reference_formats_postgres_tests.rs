@@ -18,8 +18,7 @@ pub(super) async fn run(
     ];
     for (index, format) in ["snapshot", "animated", "image"].into_iter().enumerate() {
         let mut assets = Vec::new();
-        for asset in 0..2 {
-            let bytes = images[asset];
+        for bytes in images {
             let hash = hex::encode(Sha256::digest(bytes));
             let request = Request::builder()
                 .method("PUT")
