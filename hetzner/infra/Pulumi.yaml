@@ -78,6 +78,9 @@ resources:
             - 0.0.0.0/0
             - ::/0
           description: Tailscale direct connections
+      # Attach by label so the server is covered from creation onward.
+      applyTos:
+        - labelSelector: app=buzz
     options:
       version: 1.43.4
 
@@ -90,8 +93,6 @@ resources:
       location: ${location}
       sshKeys:
         - ${adminKey.id}
-      firewallIds:
-        - ${firewall.id}
       publicNets:
         # IPv4 is needed for outbound pulls from GitHub and ghcr.io.
         - ipv4Enabled: true
@@ -130,6 +131,8 @@ resources:
           - touch /var/lib/buzz/cloud-init-done
     options:
       version: 1.43.4
+      dependsOn:
+        - ${firewall}
       protect: true
       ignoreChanges:
         - userData
