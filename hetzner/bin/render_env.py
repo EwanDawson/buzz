@@ -47,6 +47,17 @@ relay_env = {
 }
 
 
+def openssh_key(text):
+    """Rebuild an OpenSSH private key whose newlines were folded to spaces.
+
+    ESC stores multi-line values set with `pulumi env set --file` as one line.
+    """
+    head, tail = "-----BEGIN OPENSSH PRIVATE KEY-----", "-----END OPENSSH PRIVATE KEY-----"
+    body = "".join(text.replace(head, "").replace(tail, "").split())
+    lines = [body[i:i + 70] for i in range(0, len(body), 70)]
+    return "\n".join([head, *lines, tail]) + "\n"
+
+
 def write(name, text):
     path = os.path.join(out, name)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -65,7 +76,7 @@ if sb_user and sb_host:
         "backup.env",
         f"RESTIC_REPOSITORY=sftp:storagebox:restic\nRESTIC_PASSWORD={backup['resticPassword']}\n",
     )
-    write("storagebox", backup["sshPrivateKey"].rstrip("\n") + "\n")
+    write("storagebox", openssh_key(backup["sshPrivateKey"]))
     write(
         "storagebox.conf",
         f"Host storagebox\n  HostName {sb_host}\n  User {sb_user}\n  Port 23\n"

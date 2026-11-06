@@ -45,7 +45,9 @@ Volumes: `buzz-prod_buzz-postgres-data`, `buzz-prod_buzz-redis-data`,
 ## Runbooks
 
 All operator commands assume a machine on the tailnet that is logged in to
-Pulumi. `bin/*` reach the server with `ssh` over `tailscale nc`.
+Pulumi. `bin/*` reach the server with `ssh` over `tailscale nc`. A sandboxed
+machine (such as Claude's workspace) joins first with `bin/join-tailnet`, as
+an ephemeral `tag:claude-ops` node that can reach only `tag:buzz`.
 
 ### First provisioning
 
