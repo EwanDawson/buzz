@@ -562,12 +562,29 @@ async fn deliver_one(
     {
         Ok(guard) => guard,
         Err(error) => {
-            warn!(wake=%outcome.id, %error, "push delivery suppressed by community deletion fence");
-            let _ = state
-                .db
-                .fail_push_wake(outcome.community, outcome.id, outcome.claim_id)
-                .await;
-            record_delivery("suppressed");
+            match serving_write_failure(&error) {
+                ServingWriteFailure::Fenced => {
+                    warn!(wake=%outcome.id, %error, "push delivery suppressed by community deletion fence");
+                    let _ = state
+                        .db
+                        .fail_push_wake(outcome.community, outcome.id, outcome.claim_id)
+                        .await;
+                    record_delivery("suppressed");
+                }
+                ServingWriteFailure::Transient => {
+                    warn!(wake=%outcome.id, %error, "push serving-write acquisition failed; retrying");
+                    let _ = state
+                        .db
+                        .retry_push_wake(
+                            outcome.community,
+                            outcome.id,
+                            outcome.claim_id,
+                            Utc::now() + TimeDelta::seconds(2),
+                        )
+                        .await;
+                    record_delivery("retry");
+                }
+            }
             return;
         }
     };
@@ -756,8 +773,39 @@ fn class_rank(_: &str) -> u8 {
     1
 }
 
+/// How a push delivery reacts to a failed serving-write acquisition.
+#[derive(Debug, PartialEq, Eq)]
+enum ServingWriteFailure {
+    /// The community is deletion-fenced; the wake must fail terminally.
+    Fenced,
+    /// Any other error (e.g. pool timeout); the wake should be retried.
+    Transient,
+}
+
+fn serving_write_failure(error: &anyhow::Error) -> ServingWriteFailure {
+    if buzz_deletion::ServingWriteGuard::acquisition_is_fenced(error) {
+        ServingWriteFailure::Fenced
+    } else {
+        ServingWriteFailure::Transient
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn serving_write_failure_retries_unless_fenced() {
+        let fenced = anyhow::Error::new(buzz_db::DbError::AccessDenied("write-fenced".into()));
+        assert_eq!(
+            super::serving_write_failure(&fenced),
+            super::ServingWriteFailure::Fenced
+        );
+        let timeout = anyhow::anyhow!("pool timed out while waiting for an open connection");
+        assert_eq!(
+            super::serving_write_failure(&timeout),
+            super::ServingWriteFailure::Transient
+        );
+    }
+
     use super::*;
     use axum::{
         body::Bytes,
