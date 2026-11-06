@@ -4,7 +4,7 @@
 #
 # The relay port comes from BUZZ_HTTP_PORT=127.0.0.1:3000 in the host env
 # file, so the relay listens on loopback only and Tailscale Serve fronts it.
-# No other service publishes a port.
+# The only other published port is the pairing sidecar, also on loopback.
 
 x-logging: &logging
   driver: local
@@ -40,4 +40,19 @@ services:
 
   minio-init:
     image: ${MC_IMAGE:?set MC_IMAGE in versions.lock}
+    logging: *logging
+
+  # NIP-AB device pairing sidecar (same image as the relay). Desktop clients
+  # find it through BUZZ_PAIRING_RELAY_URL in the relay's NIP-11 document.
+  # Loopback only; Tailscale Serve maps https://<fqdn>/pair to it.
+  pairing-relay:
+    image: ${BUZZ_IMAGE:?set BUZZ_IMAGE in versions.lock}
+    entrypoint: ["/usr/local/bin/buzz-pair-relay"]
+    environment:
+      BUZZ_PAIR_RELAY_BIND_ADDR: 0.0.0.0:5000
+    ports:
+      - "127.0.0.1:5000:5000"
+    restart: unless-stopped
+    networks:
+      - buzz-net
     logging: *logging

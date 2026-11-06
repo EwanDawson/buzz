@@ -30,6 +30,8 @@ relay_env = {
     "BUZZ_AUTO_MIGRATE": "false",
     "BUZZ_GIT_CONFORMANCE_PROBE": "true",
     "BUZZ_PUSH_ENABLED": "false",
+    # Advertised in NIP-11 so desktop clients pair through the sidecar.
+    "BUZZ_PAIRING_RELAY_URL": f"wss://{domain}/pair",
     "RUST_LOG": "buzz_relay=info,buzz_db=info,buzz_auth=info,buzz_pubsub=info,tower_http=info",
     "RELAY_OWNER_PUBKEY": owner,
     "BUZZ_RELAY_PRIVATE_KEY": buzz["relay"]["privateKey"],

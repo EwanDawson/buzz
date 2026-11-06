@@ -108,6 +108,7 @@ smoke() {
 
 serve() {
   tailscale serve --bg --https=443 http://127.0.0.1:3000 >/dev/null
+  tailscale serve --bg --https=443 --set-path=/pair http://127.0.0.1:5000 >/dev/null
   tailscale serve status
 }
 
@@ -133,7 +134,7 @@ deploy() {
   compose_with "$LOCK_FILE" run --rm minio-init
   log "running migrations"
   migrate_with "$LOCK_FILE"
-  if compose_with "$LOCK_FILE" up -d --wait relay && wait_ready 180 && smoke; then
+  if compose_with "$LOCK_FILE" up -d --wait relay pairing-relay && wait_ready 180 && smoke; then
     cp "$LOCK_FILE" "$DEPLOYED_LOCK"
     serve >/dev/null
     log "deployed $(lock_value "$LOCK_FILE" UPSTREAM_COMMIT)"
@@ -143,7 +144,7 @@ deploy() {
   # Roll back the relay image only. Migrations are forward-only and stay applied.
   log "new relay failed its smoke test; rolling back the relay to the previous image"
   prepare "$DEPLOYED_LOCK"
-  compose_with "$DEPLOYED_LOCK" up -d --wait relay || true
+  compose_with "$DEPLOYED_LOCK" up -d --wait relay pairing-relay || true
   wait_ready 120 && smoke && die "rolled back to $(lock_value "$DEPLOYED_LOCK" UPSTREAM_COMMIT); upgrade needs investigation"
   die "rollback also failed; relay is down"
 }
