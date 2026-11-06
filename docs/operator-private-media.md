@@ -27,7 +27,7 @@ and sets. Root-relative paths and the tenant's HTTP/HTTPS media bases count.
 Animated profile descriptors count their poster and decoded animation URL
 independently, with the same tenant check on each. The indexed profile lookup
 expects hash characters to remain literal, as in the desktop descriptor.
-Republish over-encoded hashes such as `%61` using canonical URLs. A pasted URL in free text alone grants nothing; messages must publish imeta.
+Republish over-encoded hashes such as `%61` or JSON Unicode-escaped hash characters such as `\u0061` using canonical URLs. Ordinary Unicode escapes in profile names are supported; the URL hash must remain plain ASCII. A pasted URL in free text alone grants nothing; messages must publish imeta.
 Deleted events/channels grant nothing. Only the newest live edit supplies a
 message's attachments; its original must remain live. Superseded profiles
 are excluded. Current community icons grant community-wide access.
@@ -146,7 +146,15 @@ Before enforce, every client that uploads avatars with one key and publishes
 profiles with another must transfer the actual poster/animation bytes to an
 upload signed by the profile key. Owner relationships never inherit possession.
 Validate this in each supported client during shadow; upgrading only this
-repository's desktop does not migrate other clients.
+repository's desktop does not migrate other clients. This includes the new
+desktop/web app in `block/buzz-app`, mobile, and CLI/plugin integrations that
+publish agent profiles: verify their signer and upload flow before enabling
+enforce for their users.
+
+The legacy desktop's persona-avatar edits and team snapshot imports still need
+agent-signed transfers of both poster and animation bytes. Do not enable enforce
+for these flows until the transfer fixes and their runtime checks are complete;
+otherwise the relay can reject the new profile while local avatar state is saved.
 
 New managed-agent creation explicitly downloads the chosen target-local avatar
 with the captured owner's signer, verifies its image bytes and hash, then uploads

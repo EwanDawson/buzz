@@ -442,6 +442,11 @@ owner's upload proof to the agent. Automatic reconciliation has no owner signer.
 The captured community stays pinned through download, upload and profile publication, even if the active
 workspace changes while the request is awaiting I/O.
 
+Persona-avatar edits and team snapshot imports still lack this explicit
+owner-to-agent transfer. They are prerequisites for media enforce mode: cover
+both poster and animation bytes and pin the owner/community before awaits.
+Do not assume creation's transfer covers these independent publication paths.
+
 The configured community origin set is refreshed through narrow workspace IPC
 before startup restore and when inactive communities change, without resetting
 active community state. After source removal, the shared writer may reuse an

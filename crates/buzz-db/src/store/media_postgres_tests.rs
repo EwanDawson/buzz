@@ -203,7 +203,7 @@ async fn edits_deletion_legacy_profiles_and_publication_boundaries() {
         "superseded avatar grants nothing"
     );
     // Image-only profiles remain readable. Over-encoded animation hashes do not
-    // widen profile candidates beyond hash/JSON-escape matches.
+    // widen profile candidates beyond direct hash matches.
     let encoded = format!("{base}/{a}.bin")
         .replace(':', "%3A")
         .replace('/', "%2F")
@@ -378,9 +378,17 @@ async fn popular_media_prefers_live_readable_references_and_bounds_work() {
     let animation = format!("{base}/{}.png", "3".repeat(64))
         .replace(':', "%3A")
         .replace('/', "%2F");
-    let profile_content =
-        serde_json::json!({"picture":format!("{base}/{poster}.png#buzz-anim={animation}")})
-            .to_string();
+    // Python-style ensure_ascii JSON leaves ordinary non-ASCII names escaped,
+    // while the unrelated URL hash remains plain ASCII. Keep literal escapes in
+    // the signed/stored content, rather than serializing a decoded Rust string.
+    let profile_content = format!(
+        r#"{{"name":"Jos\u00e9 \ud83d\udc1d","picture":"{base}/{poster}.png#buzz-anim={animation}"}}"#
+    );
+    assert!(profile_content.contains(r"\u00e9"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&profile_content).unwrap()["name"],
+        "José 🐝"
+    );
     let profiles: Vec<_> = (0..1100)
         .map(|_| {
             let event = EventBuilder::new(Kind::Metadata, &profile_content)
@@ -391,24 +399,61 @@ async fn popular_media_prefers_live_readable_references_and_bounds_work() {
         .collect();
     sqlx::query("INSERT INTO events(community_id,id,pubkey,created_at,kind,tags,content,sig) SELECT $1,decode(p->>'id','hex'),decode(p->>'pubkey','hex'),to_timestamp((p->>'created_at')::bigint),0,p->'tags',p->>'content',decode(p->>'sig','hex') FROM jsonb_array_elements($2) p")
         .bind(community.as_uuid()).bind(serde_json::Value::Array(profiles)).execute(db.pool()).await.unwrap();
-    assert_eq!(
-        db.media_access(
+    let private_denial = db
+        .media_access(
             community,
             &snapshot_hash,
             "png",
             &base,
             reader.public_key().as_bytes(),
             false,
-            |_, _| true
+            |_, _| true,
         )
-        .await
-        .expect("unrelated animated profiles must preserve private denial"),
-        MediaAccess::Restricted
+        .await;
+    let absent = db
+        .media_access(
+            community,
+            &"1".repeat(64),
+            "bin",
+            &base,
+            reader.public_key().as_bytes(),
+            false,
+            |_, _| true,
+        )
+        .await;
+    assert!(
+        matches!(private_denial, Ok(MediaAccess::Restricted))
+            && matches!(absent, Ok(MediaAccess::NoReference)),
+        "escaped-name decoys: private={private_denial:?}, absent={absent:?}"
     );
-    assert_eq!(
-        allowed(&db, community, &"1".repeat(64), &base, &reader).await,
-        MediaAccess::NoReference
-    );
+    // A direct ASCII hash remains readable among escaped-name decoys. A hash
+    // whose own ASCII characters are Unicode-escaped needs republication.
+    let canonical_hash = "4".repeat(64);
+    for (profile_hash, expected) in [
+        (canonical_hash.clone(), MediaAccess::Allowed),
+        (r"\u0034".repeat(64), MediaAccess::Restricted),
+    ] {
+        let profile = EventBuilder::new(
+            Kind::Metadata,
+            format!(r#"{{"name":"Jos\u00e9","picture":"{base}/{profile_hash}.bin"}}"#),
+        )
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+        db.insert_event(community, &profile, None).await.unwrap();
+        db.record_media_publications(community, vec![canonical_hash.clone()])
+            .await
+            .unwrap();
+        assert_eq!(
+            allowed(&db, community, &canonical_hash, &base, &reader).await,
+            expected
+        );
+        sqlx::query("UPDATE events SET deleted_at=now() WHERE community_id=$1 AND id=$2")
+            .bind(community.as_uuid())
+            .bind(profile.id.as_bytes().as_slice())
+            .execute(db.pool())
+            .await
+            .unwrap();
+    }
     // An oversized readable row must fail closed without buffering all candidates.
     let huge_hash = "e".repeat(64);
     let huge = EventBuilder::new(Kind::Custom(1), "z".repeat(16 * 1024 * 1024 + 1))
