@@ -1,0 +1,43 @@
+# Private overlay on top of upstream deploy/compose/compose.yml (taken from
+# UPSTREAM_COMMIT in versions.lock). It only pins images, tunes the small
+# host, and bounds logs. Ports, volumes and service names stay upstream's.
+#
+# The relay port comes from BUZZ_HTTP_PORT=127.0.0.1:3000 in the host env
+# file, so the relay listens on loopback only and Tailscale Serve fronts it.
+# No other service publishes a port.
+
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  relay:
+    image: ${BUZZ_IMAGE:?set BUZZ_IMAGE in versions.lock}
+    environment:
+      BUZZ_DB_POOL_SIZE: "20"
+    logging: *logging
+
+  postgres:
+    image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE in versions.lock}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - max_connections=40
+    shm_size: 256m
+    logging: *logging
+
+  redis:
+    image: ${REDIS_IMAGE:?set REDIS_IMAGE in versions.lock}
+    logging: *logging
+
+  minio:
+    image: ${SILO_IMAGE:?set SILO_IMAGE in versions.lock}
+    logging: *logging
+
+  minio-init:
+    image: ${MC_IMAGE:?set MC_IMAGE in versions.lock}
+    logging: *logging

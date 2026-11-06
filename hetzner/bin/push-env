@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Render host config from ESC and install it on the server over Tailscale SSH.
+. "$(dirname "$0")/lib.sh"
+dir=$("$HETZNER_DIR/bin/render-env")
+trap 'rm -rf "$dir"' EXIT
+remote 'install -d -m 0700 /etc/buzz /etc/buzz/ssh'
+put() { remote "umask 077; cat > '$2'" <"$dir/$1"; }
+put buzz.env /etc/buzz/buzz.env
+if [[ -f "$dir/backup.env" ]]; then
+  put backup.env /etc/buzz/backup.env
+  put storagebox /etc/buzz/ssh/storagebox
+  put storagebox.conf /etc/ssh/ssh_config.d/buzz-storagebox.conf
+  remote 'chmod 0644 /etc/ssh/ssh_config.d/buzz-storagebox.conf'
+fi
+log "host config installed on $BUZZ_HOST"

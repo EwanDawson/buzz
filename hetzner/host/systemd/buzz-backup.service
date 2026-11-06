@@ -1,0 +1,10 @@
+[Unit]
+Description=Buzz relay online backup to the Storage Box
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/usr/local/sbin/buzzctl backup

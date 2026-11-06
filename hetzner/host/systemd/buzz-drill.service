@@ -1,0 +1,10 @@
+[Unit]
+Description=Buzz restore drill from the latest backup (production untouched)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/usr/local/sbin/buzzctl restore-drill

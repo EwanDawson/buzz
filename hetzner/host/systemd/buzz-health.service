@@ -1,0 +1,9 @@
+[Unit]
+Description=Buzz relay health snapshot
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/buzzctl health
+# A failed check is recorded in /var/lib/buzz/status.json and the journal.
+SuccessExitStatus=1
