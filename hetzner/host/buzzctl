@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+# buzzctl: the one entry point for operating the Buzz relay on this host.
+#
+# Layout (see hetzner/README.md):
+#   /opt/buzz                    clone of the fork; tooling in /opt/buzz/hetzner
+#   /etc/buzz/buzz.env           relay + compose env (root, 0600), rendered from Pulumi ESC
+#   /etc/buzz/backup.env         restic repository + password (root, 0600)
+#   /etc/buzz/ssh/               Storage Box key and ssh config (root, 0700)
+#   /var/lib/buzz/bundle/<sha>/  upstream deploy/compose at the pinned commit
+#   /var/lib/buzz/deployed.lock  versions.lock that is currently running
+#   /var/lib/buzz/status.json    latest health snapshot
+set -euo pipefail
+
+REPO_DIR=${BUZZ_REPO_DIR:-/opt/buzz}
+TOOL_DIR="$REPO_DIR/hetzner"
+STATE_DIR=${BUZZ_STATE_DIR:-/var/lib/buzz}
+ENV_FILE=${BUZZ_ENV_FILE:-/etc/buzz/buzz.env}
+BACKUP_ENV=${BUZZ_BACKUP_ENV:-/etc/buzz/backup.env}
+LOCK_FILE="$TOOL_DIR/versions.lock"
+DEPLOYED_LOCK="$STATE_DIR/deployed.lock"
+PROJECT=buzz-prod
+OPS_LOCK=${BUZZ_OPS_LOCK:-/run/buzzctl.lock}
+
+log() { printf '%s buzzctl: %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+with_lock() {
+  exec 9>"$OPS_LOCK"
+  flock -w 600 9 || die "another buzzctl operation holds $OPS_LOCK"
+}
+
+lock_value() { # lock_value FILE KEY
+  sed -n "s/^$2=//p" "$1" | tail -1
+}
+
+bundle_dir() { # bundle_dir LOCKFILE
+  echo "$STATE_DIR/bundle/$(lock_value "$1" UPSTREAM_COMMIT)"
+}
+
+compose_with() { # compose_with LOCKFILE args...
+  local lock=$1; shift
+  local dir; dir=$(bundle_dir "$lock")
+  [[ -f "$dir/compose.yml" ]] || die "bundle missing at $dir; run: buzzctl prepare"
+  docker compose --project-name "$PROJECT" --project-directory "$dir" \
+    --env-file "$ENV_FILE" --env-file "$lock" \
+    -f "$dir/compose.yml" -f "$TOOL_DIR/compose/compose.override.yml" "$@"
+}
+
+compose() {
+  local lock=$DEPLOYED_LOCK
+  [[ -f "$lock" ]] || lock=$LOCK_FILE
+  compose_with "$lock" "$@"
+}
+
+require_env() {
+  [[ -f "$ENV_FILE" ]] || die "$ENV_FILE missing; render it with hetzner/bin/push-env"
+  if grep -q 'CHANGE_ME' "$ENV_FILE"; then die "$ENV_FILE still has CHANGE_ME values"; fi
+  grep -q '^BUZZ_HTTP_PORT=127\.0\.0\.1:' "$ENV_FILE" || die "BUZZ_HTTP_PORT must bind 127.0.0.1"
+}
+
+# Extract upstream deploy/compose at the pinned commit into the bundle dir.
+prepare() { # prepare LOCKFILE
+  local lock=$1 commit repo dir
+  commit=$(lock_value "$lock" UPSTREAM_COMMIT)
+  repo=$(lock_value "$lock" UPSTREAM_REPO)
+  dir=$(bundle_dir "$lock")
+  if [[ ! -f "$dir/compose.yml" ]]; then
+    git -C "$REPO_DIR" cat-file -e "$commit^{commit}" 2>/dev/null \
+      || git -C "$REPO_DIR" fetch --quiet --depth=1 "$repo" "$commit"
+    mkdir -p "$dir.tmp"
+    git -C "$REPO_DIR" archive "$commit" deploy/compose | tar -x -C "$dir.tmp" --strip-components=2
+    mv "$dir.tmp" "$dir"
+  fi
+  # Upstream's relay service reads env_file .env next to compose.yml.
+  ln -sfn "$ENV_FILE" "$dir/.env"
+}
+
+wait_ready() { # wait_ready SECONDS
+  local deadline=$((SECONDS + $1))
+  while ((SECONDS < deadline)); do
+    if curl -fsS --max-time 3 http://127.0.0.1:3000/_liveness >/dev/null 2>&1 \
+      && [[ "$(container_health relay)" == healthy ]]; then
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+container_health() {
+  local id; id=$(compose ps -q "$1" 2>/dev/null || true)
+  [[ -n "$id" ]] || { echo missing; return; }
+  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id"
+}
+
+smoke() {
+  curl -fsS --max-time 5 http://127.0.0.1:3000/_liveness >/dev/null || { log "liveness failed"; return 1; }
+  # NIP-11 document must come back as JSON. The relay scopes by Host header,
+  # so ask as the tailnet name, exactly as Tailscale Serve forwards it.
+  local domain; domain=$(sed -n 's/^BUZZ_DOMAIN=//p' "$ENV_FILE")
+  curl -fsS --max-time 5 -H 'Accept: application/nostr+json' -H "Host: $domain" http://127.0.0.1:3000/ \
+    | jq -e 'type == "object"' >/dev/null || { log "NIP-11 failed"; return 1; }
+  for svc in postgres redis minio relay; do
+    [[ "$(container_health "$svc")" == healthy ]] || { log "$svc not healthy"; return 1; }
+  done
+  log "smoke test passed"
+}
+
+serve() {
+  tailscale serve --bg --https=443 http://127.0.0.1:3000 >/dev/null
+  tailscale serve --bg --https=443 --set-path=/pair http://127.0.0.1:5000 >/dev/null
+  tailscale serve status
+}
+
+migrate_with() { # migrate_with LOCKFILE
+  compose_with "$1" run --rm --no-deps --entrypoint /usr/local/bin/buzz-admin relay migrate
+}
+
+deploy() {
+  require_env
+  with_lock
+  prepare "$LOCK_FILE"
+  log "pulling pinned images"
+  compose_with "$LOCK_FILE" pull --quiet
+  local first_deploy=false
+  [[ -f "$DEPLOYED_LOCK" ]] || first_deploy=true
+  if ! $first_deploy && cmp -s "$LOCK_FILE" "$DEPLOYED_LOCK"; then
+    log "versions.lock unchanged; ensuring services are up"
+  elif ! $first_deploy; then
+    log "pre-upgrade backup"
+    BUZZ_BACKUP_TAG=pre-upgrade do_backup || die "pre-upgrade backup failed; not upgrading"
+  fi
+  compose_with "$LOCK_FILE" up -d --wait postgres redis minio
+  compose_with "$LOCK_FILE" run --rm minio-init
+  log "running migrations"
+  migrate_with "$LOCK_FILE"
+  if compose_with "$LOCK_FILE" up -d --wait relay pairing-relay && wait_ready 180 && smoke; then
+    cp "$LOCK_FILE" "$DEPLOYED_LOCK"
+    serve >/dev/null
+    log "deployed $(lock_value "$LOCK_FILE" UPSTREAM_COMMIT)"
+    return 0
+  fi
+  if $first_deploy; then die "first deploy failed; nothing to roll back to"; fi
+  # Roll back the relay image only. Migrations are forward-only and stay applied.
+  log "new relay failed its smoke test; rolling back the relay to the previous image"
+  prepare "$DEPLOYED_LOCK"
+  compose_with "$DEPLOYED_LOCK" up -d --wait relay pairing-relay || true
+  wait_ready 120 && smoke && die "rolled back to $(lock_value "$DEPLOYED_LOCK" UPSTREAM_COMMIT); upgrade needs investigation"
+  die "rollback also failed; relay is down"
+}
+
+volume_path() { docker volume inspect -f '{{.Mountpoint}}' "${PROJECT}_$1"; }
+
+do_backup() {
+  [[ -f "$BACKUP_ENV" ]] || die "$BACKUP_ENV missing"
+  # shellcheck disable=SC1090
+  set -a; . "$BACKUP_ENV"; set +a
+  local work="$STATE_DIR/backup-work" tag=${BUZZ_BACKUP_TAG:-nightly}
+  rm -rf "$work"; install -d -m 0700 "$work"
+  log "dumping postgres"
+  compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' >"$work/postgres.dump"
+  [[ -s "$work/postgres.dump" ]] || die "empty postgres dump"
+  log "flushing redis"
+  compose exec -T redis sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning BGREWRITEAOF' >/dev/null || true
+  sleep 5
+  cp "$DEPLOYED_LOCK" "$work/versions.lock" 2>/dev/null || cp "$LOCK_FILE" "$work/versions.lock"
+  cp "$ENV_FILE" "$work/buzz.env"
+  log "uploading to restic repository"
+  nice -n 10 ionice -c3 restic backup --tag "$tag" --host buzz \
+    "$work" "$(volume_path buzz-minio-data)" "$(volume_path buzz-git-data)" "$(volume_path buzz-redis-data)"
+  rm -rf "$work"
+  date -u +%s >"$STATE_DIR/last-backup"
+  log "backup complete ($tag)"
+}
+
+backup() {
+  with_lock
+  do_backup
+  if [[ "$(date -u +%u)" == 7 ]]; then
+    log "weekly retention"
+    # shellcheck disable=SC1090
+    set -a; . "$BACKUP_ENV"; set +a
+    restic forget --host buzz --keep-daily 7 --keep-weekly 5 --keep-monthly 6 --prune
+  fi
+}
+
+# Restore the latest snapshot into scratch space and prove the database dump
+# loads into a throwaway Postgres with no network. Production is untouched.
+restore_drill() {
+  with_lock
+  # shellcheck disable=SC1090
+  set -a; . "$BACKUP_ENV"; set +a
+  local drill="$STATE_DIR/drill" start=$SECONDS name=buzz-drill-pg
+  rm -rf "$drill"; install -d -m 0700 "$drill"
+  log "restoring latest snapshot to $drill"
+  restic restore latest --host buzz --target "$drill"
+  local dump; dump=$(find "$drill" -name postgres.dump | head -1)
+  [[ -n "$dump" ]] || die "no postgres.dump in snapshot"
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker run -d --name "$name" --network none -e POSTGRES_PASSWORD=drill \
+    "$(lock_value "$DEPLOYED_LOCK" POSTGRES_IMAGE)" >/dev/null
+  for _ in $(seq 60); do docker exec "$name" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 2; done
+  docker cp "$dump" "$name:/tmp/postgres.dump"
+  docker exec "$name" createdb -U postgres buzz
+  docker exec "$name" pg_restore -U postgres -d buzz --no-owner /tmp/postgres.dump
+  local events; events=$(docker exec "$name" psql -U postgres -d buzz -tAc 'select count(*) from events')
+  docker rm -f "$name" >/dev/null
+  local objects git
+  objects=$(find "$drill" -path '*buzz-minio-data*' -type f | wc -l)
+  git=$(find "$drill" -path '*buzz-git-data*' -type f | wc -l)
+  rm -rf "$drill"
+  log "restore drill passed in $((SECONDS - start))s: events=$events object_files=$objects git_files=$git"
+  date -u +%s >"$STATE_DIR/last-drill"
+}
+
+health() {
+  local now relay pg redis minio disk mem backup_age drill_age ok=true
+  now=$(date -u +%s)
+  relay=$(container_health relay); pg=$(container_health postgres)
+  redis=$(container_health redis); minio=$(container_health minio)
+  disk=$(df --output=pcent / | tail -1 | tr -dc 0-9)
+  mem=$(awk '/MemAvailable/{a=$2}/MemTotal/{t=$2}END{printf "%d", a*100/t}' /proc/meminfo)
+  backup_age=$(( now - $(cat "$STATE_DIR/last-backup" 2>/dev/null || echo 0) ))
+  drill_age=$(( now - $(cat "$STATE_DIR/last-drill" 2>/dev/null || echo 0) ))
+  curl -fsS --max-time 3 http://127.0.0.1:3000/_liveness >/dev/null 2>&1 || ok=false
+  for s in "$relay" "$pg" "$redis" "$minio"; do [[ "$s" == healthy ]] || ok=false; done
+  (( disk < 80 )) || ok=false
+  (( mem >= 20 )) || ok=false
+  (( backup_age < 26 * 3600 )) || ok=false
+  jq -n --argjson ok "$ok" --arg at "$(date -u +%FT%TZ)" --arg relay "$relay" --arg postgres "$pg" \
+    --arg redis "$redis" --arg minio "$minio" --argjson disk_pct "$disk" --argjson mem_avail_pct "$mem" \
+    --argjson backup_age_s "$backup_age" --argjson drill_age_s "$drill_age" \
+    --arg version "$(lock_value "$DEPLOYED_LOCK" UPSTREAM_COMMIT 2>/dev/null || true)" \
+    '{ok:$ok, at:$at, version:$version, relay:$relay, postgres:$postgres, redis:$redis, minio:$minio,
+      disk_pct:$disk_pct, mem_avail_pct:$mem_avail_pct, backup_age_s:$backup_age_s, drill_age_s:$drill_age_s}' \
+    | tee "$STATE_DIR/status.json.tmp"
+  mv "$STATE_DIR/status.json.tmp" "$STATE_DIR/status.json"
+  $ok
+}
+
+backup_init() {
+  # shellcheck disable=SC1090
+  set -a; . "$BACKUP_ENV"; set +a
+  restic cat config >/dev/null 2>&1 && { log "restic repository already initialised"; return; }
+  restic init
+}
+
+install_units() {
+  install -m 0755 "$TOOL_DIR/host/buzzctl" /usr/local/sbin/buzzctl
+  install -m 0644 "$TOOL_DIR"/host/systemd/*.service "$TOOL_DIR"/host/systemd/*.timer /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now buzz-health.timer buzz-backup.timer buzz-drill.timer
+  command -v restic >/dev/null || { apt-get update -qq && apt-get install -y -qq restic; }
+  log "installed buzzctl and timers"
+}
+
+usage() {
+  cat <<'EOF'
+usage: buzzctl <command>
+  deploy          prepare, pull, back up (on upgrade), migrate, start, smoke-test, serve
+  status          docker compose ps
+  health          write and print /var/lib/buzz/status.json (exit 1 if unhealthy)
+  smoke           quick functional check of the running stack
+  backup-init     create the restic repository on the Storage Box (once)
+  backup          online backup to the Storage Box (restic)
+  restore-drill   restore latest backup into scratch space and verify it, production untouched
+  serve           (re)apply the Tailscale Serve config
+  logs [svc]      follow logs (default relay)
+  compose ...     run docker compose with the canonical project, files and env
+  install         install buzzctl, restic and systemd timers from the repo
+EOF
+}
+
+cmd=${1:-help}; shift || true
+case "$cmd" in
+  deploy) deploy ;;
+  status) compose ps ;;
+  health) health ;;
+  smoke) smoke ;;
+  backup) backup ;;
+  restore-drill) restore_drill ;;
+  serve) serve ;;
+  logs) compose logs -f --tail=200 "${@:-relay}" ;;
+  compose) compose "$@" ;;
+  prepare) prepare "$LOCK_FILE" ;;
+  install) install_units ;;
+  backup-init) backup_init ;;
+  *) usage ;;
+esac

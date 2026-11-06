@@ -1,0 +1,10 @@
+# Pinned versions for the Hetzner deployment. Written by hetzner/bin/bump.
+# KEY=VALUE only: this file is passed to `docker compose --env-file` and sourced by scripts.
+# Bump it through a PR; merging the PR is the approval to upgrade.
+UPSTREAM_REPO=https://github.com/block/buzz
+UPSTREAM_COMMIT=9a6cb3ffdfe8bf077e184674d8850fdf48bfbdcd
+BUZZ_IMAGE=ghcr.io/block/buzz:sha-9a6cb3f@sha256:e5aeb85f449f8816ffc5b59f1105912781b63e41b92b6f85350b92724b32cf4c
+POSTGRES_IMAGE=postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+REDIS_IMAGE=redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+SILO_IMAGE=pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
+MC_IMAGE=pgsty/mc:RELEASE.2026-09-16T00-00-00Z@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd

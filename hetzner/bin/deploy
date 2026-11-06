@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Deploy the given fork ref (default: origin/main) to the server.
+# The server checks out that ref, then runs `buzzctl deploy`, which takes a
+# pre-upgrade backup, migrates, starts, smoke-tests and rolls back the relay
+# image on failure.
+. "$(dirname "$0")/lib.sh"
+ref=${1:-main}
+"$HETZNER_DIR/bin/push-env"
+remote "set -e; cd /opt/buzz; git fetch --quiet origin '$ref'; git checkout --quiet --detach FETCH_HEAD;
+        git log -1 --format='fork ref %h %s'; hetzner/host/buzzctl install; buzzctl deploy"

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Rebase the fork's main onto upstream main and force-push it. Fork-only
+# changes live under hetzner/ (and future .github/workflows/fork-*.yml), so
+# the rebase should never conflict; if it does, stop and report.
+. "$(dirname "$0")/lib.sh"
+cd "$HETZNER_DIR/.."
+upstream=$(sed -n 's/^UPSTREAM_REPO=//p' hetzner/versions.lock)
+git fetch --quiet origin main
+git fetch --quiet "$upstream" main
+up=$(git rev-parse FETCH_HEAD)
+git checkout --quiet -B fork-sync origin/main
+if ! git rebase --quiet "$up"; then
+  git rebase --abort
+  die "rebase onto upstream $up conflicted; fork-only changes must stay under hetzner/"
+fi
+# Report upstream workflows that need disabling in the fork's Actions settings.
+git ls-files .github/workflows | grep -v '/fork-' | sed 's/^/upstream workflow: /' >&2 || true
+git push --force-with-lease=main:origin/main origin fork-sync:main
+log "fork main rebased onto upstream $up"

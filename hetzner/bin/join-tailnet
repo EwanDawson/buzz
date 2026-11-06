@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Join this (ephemeral, sandboxed) operator machine to the tailnet as an
+# ephemeral tag:claude-ops node, using the OAuth client in ESC. Runs
+# tailscaled in userspace mode, so nothing needs root networking.
+# Requires the tailscale and tailscaled binaries on PATH.
+. "$(dirname "$0")/lib.sh"
+state=${TS_STATE_DIR:-$HOME/.local/state/buzz-tailscale}
+mkdir -p "$state" /run/tailscale
+if ! tailscale status >/dev/null 2>&1; then
+  nohup tailscaled --tun=userspace-networking --state="$state/tailscaled.state" \
+    --socket=/run/tailscale/tailscaled.sock --socks5-server=localhost:1055 \
+    >"$state/tailscaled.log" 2>&1 &
+  for _ in $(seq 20); do tailscale status >/dev/null 2>&1 && break; sleep 1; done
+fi
+key=$(esc_json | python3 -I -c '
+import json, sys, urllib.parse, urllib.request
+t = json.load(sys.stdin)["tailscale"]
+data = urllib.parse.urlencode({"client_id": t["oauthClientId"], "client_secret": t["oauthClientSecret"]}).encode()
+tok = json.load(urllib.request.urlopen("https://api.tailscale.com/api/v2/oauth/token", data))["access_token"]
+body = json.dumps({"capabilities": {"devices": {"create": {"reusable": False, "ephemeral": True,
+        "preauthorized": True, "tags": [t["opsTag"]]}}}, "expirySeconds": 600,
+        "description": "claude-ops operator"}).encode()
+req = urllib.request.Request("https://api.tailscale.com/api/v2/tailnet/-/keys", data=body,
+        headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+print(json.load(urllib.request.urlopen(req))["key"])')
+tailscale up --auth-key="$key" --hostname="claude-ops-$(date -u +%m%d%H%M)" --advertise-tags=tag:claude-ops
+tailscale status --self
+log "joined tailnet; reach the relay with: curl --socks5-hostname localhost:1055 https://<fqdn>/"

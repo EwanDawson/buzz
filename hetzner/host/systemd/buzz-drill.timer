@@ -1,0 +1,9 @@
+[Unit]
+Description=Monthly Buzz restore drill
+
+[Timer]
+OnCalendar=*-*-01 04:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

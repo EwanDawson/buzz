@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Point versions.lock at the newest upstream main commit that has a published
+# relay image. Pins every image by digest. Prints the old and new commits.
+. "$(dirname "$0")/lib.sh"
+lock="$HETZNER_DIR/versions.lock"
+upstream=$(sed -n 's/^UPSTREAM_REPO=//p' "$lock")
+old=$(sed -n 's/^UPSTREAM_COMMIT=//p' "$lock")
+new=$(git ls-remote "$upstream" refs/heads/main | cut -f1)
+[[ -n "$new" ]] || die "could not resolve upstream main"
+python3 -I "$HETZNER_DIR/bin/resolve_images.py" "$upstream" "$new" >"$lock.new"
+mv "$lock.new" "$lock"
+echo "old=$old"
+echo "new=$(sed -n 's/^UPSTREAM_COMMIT=//p' "$lock")"
