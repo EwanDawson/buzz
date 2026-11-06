@@ -116,9 +116,7 @@ async fn fixture(endpoint: &str, mode: super::media_access::MediaReadMode) -> Ar
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pool = sqlx::PgPool::connect(&config.database_url).await.unwrap();
     let db = buzz_db::Db::from_pool(pool.clone());
-    let redis = deadpool_redis::Config::from_url(&config.redis_url)
-        .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-        .unwrap();
+    let redis = buzz_pubsub::redis_connection(&config.redis_url).unwrap();
     let pubsub = Arc::new(
         buzz_pubsub::PubSubManager::new(&config.redis_url, redis.clone())
             .await
