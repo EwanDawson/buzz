@@ -2539,6 +2539,27 @@ pub async fn ingest_event(
 ///   client ceiling (60 s, CANVAS_MAX_FUTURE_SKEW_SECS) < canvas relay bound (300 s) < relay general bound (900 s)
 const CANVAS_MAX_INGEST_FUTURE_SECS: i64 = 300;
 
+/// Reject events whose content or any tag value contains a NUL byte.
+/// Postgres `text` cannot store `\0`, so such an event would otherwise fail
+/// at insert with an encoding error and surface as an internal error.
+fn reject_nul_bytes(event: &Event) -> Result<(), IngestError> {
+    if event.content.contains('\0') {
+        return Err(IngestError::Rejected(
+            "invalid: content contains a NUL byte".into(),
+        ));
+    }
+    if event
+        .tags
+        .iter()
+        .any(|tag| tag.as_slice().iter().any(|value| value.contains('\0')))
+    {
+        return Err(IngestError::Rejected(
+            "invalid: tag contains a NUL byte".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Returns `Ok(())` if the canvas event timestamp is within the allowed future
 /// window, or `Err` with a rejection message otherwise.
 ///
@@ -2686,6 +2707,7 @@ async fn ingest_event_inner(
             event.content.len()
         )));
     }
+    reject_nul_bytes(&event)?;
 
     let is_gift_wrap = kind_u32 == KIND_GIFT_WRAP;
     if event.pubkey != *auth.pubkey() && !is_gift_wrap {
@@ -5242,6 +5264,34 @@ mod postgres_tests {
             .tags(nostr_tags)
             .sign_with_keys(&keys)
             .unwrap()
+    }
+
+    /// Postgres `text` cannot hold `\0`; an event carrying one must be a
+    /// client `invalid:` rejection, not a storage error surfacing as a 500.
+    /// Mutation: drop either check in `reject_nul_bytes` and the matching
+    /// case below fails.
+    #[test]
+    fn nul_bytes_in_content_or_tags_are_rejected_as_invalid() {
+        let cases = [
+            (
+                make_event_with_tags(KIND_STREAM_MESSAGE, "a\0b", &[]),
+                "content",
+            ),
+            (
+                make_event_with_tags(KIND_STREAM_MESSAGE, "ok", &[&["h", "chan\0nel"]]),
+                "tag",
+            ),
+        ];
+        for (event, what) in cases {
+            match reject_nul_bytes(&event) {
+                Err(IngestError::Rejected(msg)) => {
+                    assert!(msg.starts_with("invalid: "), "{what}: {msg}");
+                }
+                other => panic!("{what}: NUL byte must be rejected, got {other:?}"),
+            }
+        }
+        let clean = make_event_with_tags(KIND_STREAM_MESSAGE, "ok", &[&["h", "channel"]]);
+        assert!(reject_nul_bytes(&clean).is_ok());
     }
 
     #[test]
