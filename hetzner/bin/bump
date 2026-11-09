@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # Point versions.lock at the newest upstream main commit that has a published
-# relay image. Pins every image by digest. Prints the old and new commits.
+# relay image (CI publishes sha-<7> some time after a commit lands, so the
+# tip may not have one yet). Pins every image by digest. Prints the old and
+# new commits; leaves versions.lock unchanged when nothing newer is published.
 . "$(dirname "$0")/lib.sh"
 lock="$HETZNER_DIR/versions.lock"
 upstream=$(sed -n 's/^UPSTREAM_REPO=//p' "$lock")
 old=$(sed -n 's/^UPSTREAM_COMMIT=//p' "$lock")
-new=$(git ls-remote "$upstream" refs/heads/main | cut -f1)
-[[ -n "$new" ]] || die "could not resolve upstream main"
-python3 -I "$HETZNER_DIR/bin/resolve_images.py" "$upstream" "$new" >"$lock.new"
-mv "$lock.new" "$lock"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp" "$lock.new"' EXIT
+git -C "$tmp" init -q
+git -C "$tmp" fetch -q --depth="${BUMP_DEPTH:-50}" "$upstream" main || die "could not fetch upstream main"
+found=
+for c in $(git -C "$tmp" rev-list FETCH_HEAD); do
+  [[ "$c" == "$old" ]] && break
+  if python3 -I "$HETZNER_DIR/bin/resolve_images.py" "$upstream" "$c" >"$lock.new" 2>"$tmp/err"; then
+    found=$c
+    break
+  fi
+  grep -q "HTTP Error 404" "$tmp/err" || { cat "$tmp/err" >&2; die "resolving $c failed"; }
+  log "no published image for ${c:0:7} yet; trying the previous commit"
+done
+[[ -n "$found" ]] && mv "$lock.new" "$lock"
 echo "old=$old"
 echo "new=$(sed -n 's/^UPSTREAM_COMMIT=//p' "$lock")"
