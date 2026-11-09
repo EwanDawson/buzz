@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Render the host env files from Pulumi ESC into a directory (default: a new
+# temp dir, printed on stdout). Files are 0600; delete them after use.
+. "$(dirname "$0")/lib.sh"
+out=${1:-$(mktemp -d)}
+install -d -m 0700 "$out"
+esc_json | python3 -I "$HETZNER_DIR/bin/render_env.py" "$out" \
+  "$(pulumi stack output -s "$BUZZ_STACK" storageBoxUser 2>/dev/null || true)" \
+  "$(pulumi stack output -s "$BUZZ_STACK" storageBoxHost 2>/dev/null || true)"
+echo "$out"

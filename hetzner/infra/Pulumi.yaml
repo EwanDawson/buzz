@@ -1,0 +1,169 @@
+name: buzz-relay
+description: One Hetzner server and one Storage Box for a tailnet-only Buzz relay.
+runtime: yaml
+
+# All config comes from the Pulumi ESC environment EwanDawson/buzz-relay/prod
+# (see Pulumi.prod.yaml). Provider credentials arrive as hcloud:token and
+# tailscale:oauthClientId / tailscale:oauthClientSecret.
+config:
+  serverName:
+    type: string
+    default: buzz
+  serverType:
+    type: string
+    default: cx23
+  serverImage:
+    type: string
+    default: debian-13
+  location:
+    type: string
+    default: nbg1
+  storageBoxType:
+    type: string
+    default: bx11
+  storageBoxLocation:
+    type: string
+    default: fsn1
+  storageBoxPassword:
+    type: string
+    secret: true
+  adminSshPublicKey:
+    type: string
+  backupSshPublicKey:
+    type: string
+  tailscaleServerTag:
+    type: string
+    default: tag:buzz
+  forkRepo:
+    type: string
+    default: https://github.com/EwanDawson/buzz
+
+resources:
+  # One-shot key the server uses to join the tailnet on first boot. The server
+  # ignores later userData changes, so rotating this key never rebuilds it.
+  serverAuthKey:
+    type: tailscale:TailnetKey
+    properties:
+      description: buzz relay server bootstrap
+      reusable: false
+      ephemeral: false
+      preauthorized: true
+      expiry: 86400
+      tags:
+        - ${tailscaleServerTag}
+      recreateIfInvalid: never
+    options:
+      version: 0.29.4
+
+  # Break-glass key for the Hetzner rescue system only. Port 22 stays closed.
+  adminKey:
+    type: hcloud:SshKey
+    properties:
+      name: buzz-rescue-admin
+      publicKey: ${adminSshPublicKey}
+    options:
+      version: 1.43.4
+
+  # Inbound: only Tailscale's direct-connection UDP port. No TCP at all, so
+  # neither SSH nor the relay is reachable from the public internet.
+  firewall:
+    type: hcloud:Firewall
+    properties:
+      name: buzz-tailnet-only
+      rules:
+        - direction: in
+          protocol: udp
+          port: "41641"
+          sourceIps:
+            - 0.0.0.0/0
+            - ::/0
+          description: Tailscale direct connections
+      # Attach by label so the server is covered from creation onward.
+      applyTos:
+        - labelSelector: app=buzz
+    options:
+      version: 1.43.4
+
+  server:
+    type: hcloud:Server
+    properties:
+      name: ${serverName}
+      serverType: ${serverType}
+      image: ${serverImage}
+      location: ${location}
+      sshKeys:
+        - ${adminKey.id}
+      publicNets:
+        # IPv4 is needed for outbound pulls from GitHub and ghcr.io.
+        - ipv4Enabled: true
+          ipv6Enabled: true
+      backups: false
+      deleteProtection: true
+      rebuildProtection: true
+      labels:
+        app: buzz
+      userData: |
+        #cloud-config
+        package_update: true
+        package_upgrade: true
+        packages:
+          - ca-certificates
+          - curl
+          - git
+          - jq
+          - unattended-upgrades
+        write_files:
+          - path: /etc/docker/daemon.json
+            content: |
+              {"log-driver": "local", "log-opts": {"max-size": "20m", "max-file": "5"}}
+          - path: /etc/ssh/sshd_config.d/10-buzz.conf
+            content: |
+              PasswordAuthentication no
+              PermitRootLogin prohibit-password
+        runcmd:
+          - curl -fsSL https://get.docker.com | sh
+          - systemctl enable --now docker
+          - curl -fsSL https://tailscale.com/install.sh | sh
+          - tailscale up --auth-key=${serverAuthKey.key} --ssh --hostname=${serverName} --advertise-tags=${tailscaleServerTag}
+          - git clone --filter=blob:none ${forkRepo} /opt/buzz
+          - install -d -m 0700 /etc/buzz
+          - install -d -m 0750 /var/lib/buzz
+          - touch /var/lib/buzz/cloud-init-done
+    options:
+      version: 1.43.4
+      dependsOn:
+        - ${firewall}
+      protect: true
+      ignoreChanges:
+        - userData
+        - sshKeys
+        - image
+
+  storageBox:
+    type: hcloud:StorageBox
+    properties:
+      name: buzz-backups
+      storageBoxType: ${storageBoxType}
+      location: ${storageBoxLocation}
+      password: ${storageBoxPassword}
+      sshKeys:
+        - ${backupSshPublicKey}
+      accessSettings:
+        sshEnabled: true
+        reachableExternally: false
+        sambaEnabled: false
+        webdavEnabled: false
+        zfsEnabled: false
+      deleteProtection: true
+      labels:
+        app: buzz
+    options:
+      version: 1.43.4
+      protect: true
+
+outputs:
+  serverId: ${server.id}
+  serverIpv4: ${server.ipv4Address}
+  serverIpv6: ${server.ipv6Address}
+  storageBoxUser: ${storageBox.username}
+  storageBoxHost: ${storageBox.server}
