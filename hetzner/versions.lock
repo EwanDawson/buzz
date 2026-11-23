@@ -2,9 +2,9 @@
 # KEY=VALUE only: this file is passed to `docker compose --env-file` and sourced by scripts.
 # Bump it through a PR; merging the PR is the approval to upgrade.
 UPSTREAM_REPO=https://github.com/block/buzz
-UPSTREAM_COMMIT=1a5c6939c58d8840272ca43084a9620636854c57
-BUZZ_IMAGE=ghcr.io/block/buzz:sha-1a5c693@sha256:35ddaf05d5e4c8f4dccc0e12dd7de4d30f30eb81f2d309b7b5a620a6939a5b69
-POSTGRES_IMAGE=postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7
+UPSTREAM_COMMIT=80131055dc9dc544050942b1efa73c57bc67d2fa
+BUZZ_IMAGE=ghcr.io/block/buzz:sha-8013105@sha256:738ba3edab3ea174c38f4a41c0ce8d5fd0fabd7de5df9ade24a09757c7d392ae
+POSTGRES_IMAGE=postgres:17-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
 REDIS_IMAGE=redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
 SILO_IMAGE=pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
 MC_IMAGE=pgsty/mc:RELEASE.2026-09-16T00-00-00Z@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd
